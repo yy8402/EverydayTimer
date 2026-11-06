@@ -1,7 +1,7 @@
 # USB management (macOS)
 
-The timer does not need a network connection. Actions, clock settings, and history
-move over USB serial. These instructions assume the timer firmware is installed.
+The timer does not need a network connection. The NOTE4C drive exposes the
+activity list. Clock settings and history use USB serial. These instructions assume the timer firmware is installed.
 Connect the Note4C with a data-capable USB cable and close serial monitors before
 using the manager. Commands below run from this project's folder.
 
@@ -58,7 +58,30 @@ it does not automatically change for daylight saving time or travel. Run
 its readable UTC offset. `status` also prints any data errors the device reports.
 Do not ignore storage errors. `status` also includes `daily_stars` (null when unavailable), `stars_available`, and `stars_reset_local_time: "23:59"`. A clock/offset correction crossing a reset interval clears the cosmetic stars without altering bests/history. A record after 23:59 belongs to the next interval and is not cleared at midnight.
 
-## Edit actions
+## Edit activities in Finder
+
+1. Stop the timer and open **NOTE4C** under Locations in Finder.
+2. Open `activities.txt` in a plain-text editor. Write one activity per line.
+3. Save as UTF-8 plain text and eject **NOTE4C** in Finder before unplugging.
+
+```text
+Brush teeth
+拉伸
+閱讀
+```
+
+Use 1–32 distinct names, each up to 24 printable ASCII or basic Chinese
+characters (U+4E00–U+9FFF). Empty lines are ignored. The line order controls
+the timer’s activity order. Existing names keep their IDs when reordered.
+A changed name starts a new category, and previous records remain in history.
+
+The timer applies valid edits when the USB host releases the drive. If the file
+is invalid or the timer is running, the timer keeps the previous list and reports
+the error on screen and in USB status. Reconnect to get a fresh copy of the active
+list. The drive uses its own flash partition and contains only the activity
+file and any housekeeping files written by the host.
+
+## Advanced JSON activity management
 
 First export the current list:
 

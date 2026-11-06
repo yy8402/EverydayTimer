@@ -50,16 +50,20 @@ its data in place. Full restoration uses the complete backup, not these binaries
 
 ## Subsequent timer updates
 
-Export actions/history first using [USB.md](USB.md), then:
+Export actions and history using [USB.md](USB.md). On firmware 1.6.0 and
+later, eject the NOTE4C drive, then enter the ROM download mode with the
+BOOT and RESET buttons as described below. Use the serial port that appears
+in download mode.
 
 ```sh
 bash tools/flash_mac.sh /dev/cu.usbmodem1101 --update
 ```
 
-Only use this for this timer firmware with the same partition layout. The helper
-makes a fresh full backup, asks for `FLASH`, and writes/verifies the three binaries.
-It does not issue a storage erase. `--update` is not a migration method from other
-firmware. Do not choose `--install` to update if you want to retain timer data.
+Use `--update` for timer firmware with storage at `0x300000`–`0xFFFFFF`.
+The helper makes a fresh full backup, asks for `FLASH`, and writes and verifies
+the three binaries. It preserves the timer storage partition. Version 1.6.0
+allocates a separate 256 KiB activity drive from the previous app partition’s
+unused space.
 
 After either operation, reconnect USB and run `status` followed by `time-sync` as
 described in [USB.md](USB.md). Inspect any data errors before making changes.

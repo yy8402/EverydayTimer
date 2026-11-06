@@ -61,6 +61,33 @@ int main(){auto settingsroot=dir();{Core c(settingsroot);CHECK(c.init());CHECK(c
   write(recoverroot+"/pending.json",pending);
   for(int restart=0;restart<2;restart++){Core c(recoverroot);CHECK(!c.init());CHECK(read(recoverroot+"/pending.json")==pending);CHECK(read(recoverroot+"/history.json")==committed);}
  }
+ auto textroot = dir();
+ {
+   Core c(textroot);
+   auto new_id = +[](const std::string &) { return std::string("test-new-id"); };
+   CHECK(c.init());
+   CHECK(c.start(1000000, date));
+   CHECK(!c.import_activities("拉伸\n", new_id));
+   CHECK(c.stop(2300000, date + 2));
+   const auto history = read(textroot + "/history.json");
+   CHECK(c.import_activities("\xef\xbb\xbf拉伸\r\nActivity 1\r\n", new_id));
+   CHECK(c.activities_text() == "拉伸\nActivity 1\n");
+   CHECK(c.view(0, true).name == "拉伸");
+   CHECK(c.select(1));
+   CHECK(c.view(0, true).best_ms == 1300);
+   CHECK(!c.import_activities("拉伸\n拉伸\n", new_id));
+   CHECK(!c.import_activities("💪\n", new_id));
+   CHECK(!c.import_activities(std::string("A\0B", 3), new_id));
+   CHECK(!c.import_activities("\n", new_id));
+   CHECK(c.activities_text() == "拉伸\nActivity 1\n");
+   CHECK(read(textroot + "/history.json") == history);
+ }
+ {
+   Core c(textroot);
+   CHECK(c.init());
+   CHECK(c.activities_text() == "拉伸\nActivity 1\n");
+ }
+ std::filesystem::remove_all(textroot);
  std::filesystem::remove_all(clockroot);std::filesystem::remove_all(recoverroot);
  std::filesystem::remove_all(root);std::filesystem::remove_all(bad);std::cout<<checks<<" core assertions passed\n";
 }

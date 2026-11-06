@@ -1,8 +1,8 @@
+#include "activity_drive.h"
 #include "cJSON.h"
 #include "clock_view.h"
 #include "core.h"
 #include "display_backend.h"
-#include "driver/usb_serial_jtag.h"
 #include "esp_heap_caps.h"
 #include "esp_littlefs.h"
 #include "esp_partition.h"
@@ -13,6 +13,8 @@
 #include "hardware.h"
 #include "refresh_scheduler.h"
 #include "ui.h"
+#include "tinyusb_cdc_acm.h"
+#include "tinyusb_default_config.h"
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -28,7 +30,7 @@ bool export_in_progress = false;
 timer_app::IdleScreen idle_screen;
 bool clock_valid = false, hardware_ok = false, filesystem_ok = false,
      display_ok = true;
-std::string system_error;
+std::string system_error, activity_drive_error;
 unsigned up_presses = 0, down_presses = 0;
 std::atomic<unsigned> pending_updates{unsigned(display_backend::Update::Full)};
 struct Guard {
@@ -52,18 +54,42 @@ bool switch_activity(int delta) {
   redraw();
   return true;
 }
+std::string read_drive_activities() {
+  Guard guard;
+  return core.activities_text();
+}
+void report_drive_error(const char *message) {
+  Guard guard;
+  activity_drive_error = message;
+  wake_timer();
+  redraw();
+}
+void apply_drive_activities(const std::string &original, std::string edited) {
+  Guard guard;
+  if (core.activities_text() != original)
+    activity_drive_error = "List changed. Reconnect and retry";
+  else if (!core.import_activities(std::move(edited), activity_drive::id_for_name))
+    activity_drive_error = core.error();
+  else
+    activity_drive_error.clear();
+  wake_timer();
+  redraw();
+}
 int64_t epoch() { return clock_valid ? (int64_t)time(nullptr) : 0; }
 bool send_bytes(const char *b, size_t n) {
   int64_t limit = esp_timer_get_time() + 10000000;
   while (n) {
-    int sent = usb_serial_jtag_write_bytes(b, std::min<size_t>(n, 4096),
-                                           pdMS_TO_TICKS(100));
+    const size_t sent = tinyusb_cdcacm_write_queue(
+        TINYUSB_CDC_ACM_0, reinterpret_cast<const uint8_t *>(b), n);
+    tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, pdMS_TO_TICKS(100));
     if (sent > 0) {
       b += sent;
       n -= sent;
       limit = esp_timer_get_time() + 10000000;
     } else if (esp_timer_get_time() > limit)
       return false;
+    else
+      vTaskDelay(pdMS_TO_TICKS(5));
   }
   return true;
 }
@@ -92,7 +118,7 @@ cJSON *status() {
     redraw();
   const auto v = core.view(esp_timer_get_time(), clock_valid);
   cJSON *r = cJSON_CreateObject();
-  cJSON_AddStringToObject(r, "firmware", "note4c-timer/1.5.9");
+  cJSON_AddStringToObject(r, "firmware", "note4c-timer/1.6.1");
   cJSON_AddStringToObject(r, "board", "NOTE4C ESP32-S3 N16R8 SSD2683");
   cJSON_AddBoolToObject(r, "running", v.running);
   cJSON_AddBoolToObject(r, "idle_smile", idle_screen.visible());
@@ -139,6 +165,8 @@ cJSON *status() {
     cJSON_AddItemToArray(a, cJSON_CreateString(core.error().c_str()));
   if (!core.star_error().empty())
     cJSON_AddItemToArray(a, cJSON_CreateString(core.star_error().c_str()));
+  if (!activity_drive_error.empty())
+    cJSON_AddItemToArray(a, cJSON_CreateString(activity_drive_error.c_str()));
   if (!system_error.empty())
     cJSON_AddItemToArray(a, cJSON_CreateString(system_error.c_str()));
   return r;
@@ -186,6 +214,8 @@ void display_task(void *) {
       v.idle_smile = idle_screen.visible();
       if (!system_error.empty())
         v.error = system_error;
+      else if (!activity_drive_error.empty())
+        v.error = activity_drive_error;
       if (export_in_progress)
         v.error = "USB EXPORT - WAIT TO START";
     }
@@ -377,8 +407,11 @@ void usb_task(void *) {
   uint8_t b[256];
   bool overflow = false;
   for (;;) {
-    int n = usb_serial_jtag_read_bytes(b, sizeof b, pdMS_TO_TICKS(100));
-    for (int i = 0; i < n; i++) {
+    size_t n = 0;
+    tinyusb_cdcacm_read(TINYUSB_CDC_ACM_0, b, sizeof b, &n);
+    if (!n)
+      vTaskDelay(pdMS_TO_TICKS(10));
+    for (size_t i = 0; i < n; i++) {
       if (b[i] == '\n') {
         if (!overflow && !line.empty())
           command(line);
@@ -441,10 +474,15 @@ extern "C" void app_main() {
   core.update_daily_stars(epoch(), clock_valid);
   if (!hardware_ok)
     system_error = "Hardware init failed; check USB status";
-  usb_serial_jtag_driver_config_t usb{};
-  usb.rx_buffer_size = 1024;
-  usb.tx_buffer_size = 4096;
-  ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb));
+  if (activity_drive::init(read_drive_activities, apply_drive_activities,
+                           report_drive_error) != ESP_OK)
+    report_drive_error("USB activity drive unavailable");
+  tinyusb_config_t usb = TINYUSB_DEFAULT_CONFIG();
+  usb.task.size = 8192;
+  ESP_ERROR_CHECK(tinyusb_driver_install(&usb));
+  tinyusb_config_cdcacm_t serial{};
+  serial.cdc_port = TINYUSB_CDC_ACM_0;
+  ESP_ERROR_CHECK(tinyusb_cdcacm_init(&serial));
   idle_screen = timer_app::IdleScreen(esp_timer_get_time());
   xTaskCreate(display_task, "epd", 6144, nullptr, 2, &display_task_handle);
   xTaskCreate(usb_task, "usb", 8192, nullptr, 3, nullptr);

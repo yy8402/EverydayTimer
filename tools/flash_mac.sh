@@ -39,7 +39,7 @@ for line in manifest.splitlines():
     if name in expected:
         raise SystemExit('Duplicate SHA256SUMS entry: ' + name)
     expected[name] = digest.lower()
-for name, limit in zip(names, (0x8000, 0x8000, 0x2F0000)):
+for name, limit in zip(names, (0x8000, 0x8000, 0x2B0000)):
     if name not in expected:
         raise SystemExit('Missing checksum: ' + name)
     data = (source / name).read_bytes()
@@ -74,7 +74,7 @@ if [[ "$MODE" == "--install" ]]; then
   echo 'Existing foreign firmware/data are not preserved in place; recovery requires your full backup.'
 else
   echo 'UPDATE: writes bootloader, partition table and app only; does not erase timer storage.'
-  echo 'Use update only for this timer firmware with the same partition layout. Foreign firmware/data may be incompatible.'
+  echo 'Use update only for this timer firmware with the the same timer storage partition. Foreign firmware/data may be incompatible.'
 fi
 echo 'Keep USB connected and prevent computer sleep until verification finishes.'
 printf 'Type FLASH to proceed, or anything else to cancel: '

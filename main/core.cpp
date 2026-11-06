@@ -624,11 +624,11 @@ bool Core::stop(int64_t mono, int64_t epoch) {
   error_.clear();
   return true;
 }
-cJSON *Core::actions_json() const {
+static cJSON *actions_document(const std::vector<Action> &actions) {
   cJSON *d = cJSON_CreateObject();
   cJSON_AddNumberToObject(d, "schema_version", 1);
   cJSON *a = cJSON_AddArrayToObject(d, "actions");
-  for (const auto &x : actions_) {
+  for (const auto &x : actions) {
     cJSON *r = cJSON_CreateObject();
     cJSON_AddStringToObject(r, "id", x.id.c_str());
     cJSON_AddStringToObject(r, "name", x.name.c_str());
@@ -636,6 +636,55 @@ cJSON *Core::actions_json() const {
   }
   return d;
 }
+cJSON *Core::actions_json() const { return actions_document(actions_); }
+
+std::string Core::activities_text() const {
+  std::string text;
+  for (const auto &action : actions_)
+    text += action.name + '\n';
+  return text;
+}
+
+bool Core::import_activities(std::string text,
+                             std::string (*id_for_name)(const std::string &)) {
+  if (text.compare(0, 3, "\xef\xbb\xbf") == 0)
+    text.erase(0, 3);
+  if (text.find('\0') != std::string::npos)
+    return fail("Use plain UTF-8 text");
+  std::vector<Action> next;
+  size_t begin = 0;
+  while (begin < text.size()) {
+    size_t end = text.find('\n', begin);
+    auto name = text.substr(begin, end - begin);
+    if (!name.empty() && name.back() == '\r')
+      name.pop_back();
+    if (!name.empty()) {
+      for (const auto &action : next)
+        if (action.name == name)
+          return fail("Duplicate activity name");
+      if (next.size() == 32)
+        return fail("Use 1 to 32 activities");
+      auto existing = std::find_if(actions_.begin(), actions_.end(),
+                                   [&](const Action &a) { return a.name == name; });
+      next.push_back({existing == actions_.end() ? id_for_name(name) : existing->id,
+                      name});
+    }
+    if (end == std::string::npos)
+      break;
+    begin = end + 1;
+  }
+
+  if (next.size() == actions_.size() &&
+      std::equal(next.begin(), next.end(), actions_.begin(),
+                 [](const Action &a, const Action &b) { return a.id == b.id && a.name == b.name; }))
+    return true;
+
+  auto *doc = actions_document(next);
+  bool ok = set_actions(doc);
+  cJSON_Delete(doc);
+  return ok;
+}
+
 bool Core::set_actions(const cJSON *d) {
   if (running_ || save_pending_)
     return fail("Stop and save before editing actions");

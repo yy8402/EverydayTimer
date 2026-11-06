@@ -28,7 +28,7 @@ Partition layout:
 
 Only the initial install erases the storage range. An ordinary firmware update does not. There is no OTA slot or network updater.
 
-Fonts in `main/fonts.h` and `main/cjk.bin` are generated source assets and are checked in. Regenerating them is optional and requires Pillow plus the DejaVu/Noto files named in `tools/generate_fonts.py`; see licenses. The font binary covers all 20,992 basic CJK codepoints, using 24×32 monochrome glyph cells (about 2 MiB flash).
+Fonts in `main/fonts.h` and `main/cjk.bin` are generated source assets and are checked in. Regenerating them is optional and requires Pillow plus the DejaVu/Noto files named in `tools/generate_fonts.py`; see licenses. The Chinese font uses 24×32 monochrome glyph cells (about 2 MiB flash). To regenerate it alone, run `python3 tools/generate_fonts.py --cjk-only --cjk-font /path/to/NotoSansCJKsc-Medium.otf`. The 16 characters at U+9FF0–U+9FFF use the font’s missing-glyph symbol.
 
 ## Tests
 

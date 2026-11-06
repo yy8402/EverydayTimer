@@ -39,6 +39,9 @@ public:
   bool stop(int64_t monotonic_us, int64_t epoch);
   bool set_actions(const cJSON *doc);
   cJSON *actions_json() const;
+  std::string activities_text() const;
+  bool import_activities(std::string text,
+                         std::string (*id_for_name)(const std::string &));
   View view(int64_t monotonic_us, bool clock_valid) const;
   const std::string &error() const { return error_; }
   const std::string &star_error() const { return star_error_; }

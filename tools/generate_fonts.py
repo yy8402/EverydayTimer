@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Regenerate checked-in bitmap fonts using Pillow. Only needed to change typefaces."""
+import argparse
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 ROOT=Path(__file__).resolve().parents[1]
@@ -13,6 +14,27 @@ def packed(im):
    if p:b|=1<<(7-i)
   out.append(b)
  return out
+def generate_cjk(path):
+ font=ImageFont.truetype(str(path),24)
+ if font.getname() != ('Noto Sans CJK SC', 'Medium'):
+  raise ValueError('Expected NotoSansCJKsc-Medium.otf')
+ with (ROOT/'main/cjk.bin').open('wb') as f:
+  for code in range(0x4e00,0xa000):
+   im=Image.new('1',(24,32))
+   ImageDraw.Draw(im).text((0,26),chr(code),font=font,fill=1,anchor='ls')
+   f.write(packed(im))
+ print('Generated', (ROOT/'main/cjk.bin').stat().st_size, 'bytes of CJK glyphs')
+
+parser=argparse.ArgumentParser(description=__doc__)
+mode=parser.add_mutually_exclusive_group()
+mode.add_argument('--ascii-only',action='store_true')
+mode.add_argument('--cjk-only',action='store_true')
+parser.add_argument('--cjk-font',type=Path,default=Path('/usr/share/fonts/opentype/noto/NotoSansCJKsc-Medium.otf'))
+args=parser.parse_args()
+if args.cjk_only:
+ generate_cjk(args.cjk_font)
+ raise SystemExit(0)
+
 h=['// Generated bitmap font data. DejaVu font license in third_party/.','#pragma once','#include <cstdint>','struct Glyph{uint32_t offset;uint8_t w,h,advance;int8_t x,y;};','struct Font{const Glyph* glyphs;const uint8_t* bits;};']
 for name,size,path in specs:
  font=ImageFont.truetype(str(base/path),size);data=bytearray();glyphs=[]
@@ -24,12 +46,6 @@ for name,size,path in specs:
  h.append('static const Glyph glyphs_%s[]={%s};'%(name,','.join('{'+','.join(map(str,g))+'}' for g in glyphs)))
  h.append('static const Font font_%s={glyphs_%s,bits_%s};'%(name,name,name))
 (ROOT/'main/fonts.h').write_text('\n'.join(h)+'\n')
-import sys
-if '--ascii-only' in sys.argv:
- print('Generated ASCII bitmap fonts')
- raise SystemExit(0)
-font=ImageFont.truetype('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',24,index=2)
-with (ROOT/'main/cjk.bin').open('wb') as f:
- for code in range(0x4e00,0xa000):
-  im=Image.new('1',(24,32));ImageDraw.Draw(im).text((0,26),chr(code),font=font,fill=1,anchor='ls');f.write(packed(im))
-print('Generated ASCII fonts and', (ROOT/'main/cjk.bin').stat().st_size,'byte basic CJK font')
+print('Generated ASCII bitmap fonts')
+if not args.ascii_only:
+ generate_cjk(args.cjk_font)

@@ -9,7 +9,7 @@ Custom, fully offline timer firmware for **ZECTRIX NOTE4C DevKit**, ESP32-S3 N16
 - Earn a five-point star for a first or strictly faster personal best. Daily stars reset at 23:59 local time.
 - After five minutes idle, the timer gives way to a full-screen smile. Waking uses two fast refresh passes to clear its outline from the white timer screen.
 - Time is displayed in whole seconds and stored in milliseconds. The timer uses a monotonic clock and keeps a separate wall clock for records.
-- Configure activity names in English or common Chinese characters, sync the clock, and export history over USB. The timer runs offline.
+- Edit activity names in English or Chinese on a removable USB drive. Clock sync and history export use USB serial. The timer runs offline.
 
 ![Timer renderer preview](docs/timer-preview.png)
 
@@ -22,18 +22,15 @@ Boot establishes a native full-panel baseline. While running, the firmware reque
 1. Read [safe flashing and full backup](docs/FLASHING.md). Confirm the physical model and board revision before any write.
 2. Build the images into `dist/` as described in [Build and test](#build-and-test), then use `tools/flash_mac.sh`. It makes and verifies a unique 16 MiB flash backup before writing. Initial `--install` replaces existing firmware and clears the new timer storage area; `--update` preserves this timer's storage layout.
 3. Read [USB management](docs/USB.md), list the port, then run `time-sync`. The PCF8563 RTC is set from your Mac in UTC; the Mac’s current offset is saved separately for the local display. Starting is blocked until this timer has successfully saved its first UTC sync (even if previous firmware left a plausible RTC calendar), and thereafter whenever the RTC is invalid, so completed runs are not assigned fake timestamps.
-4. Edit `data/actions.json`, upload it, and use the buttons. Export `history.json` regularly.
+4. Stop the timer, open the **NOTE4C** drive in Finder, and edit `activities.txt` as plain UTF-8 text with one name per line. Save and eject the drive. See [USB management](docs/USB.md#edit-activities-in-finder) for the file rules.
 
-Example after the virtual environment from the flashing guide is active:
+Example clock sync and history export after activating the virtual environment:
 
 ```sh
 python tools/note4c.py ports
 python tools/note4c.py --port /dev/cu.usbmodemXXXX time-sync
-python tools/note4c.py --port /dev/cu.usbmodemXXXX actions put data/actions.json
 python tools/note4c.py --port /dev/cu.usbmodemXXXX history --output history.json
 ```
-
-USB is a serial management interface. The device does **not** appear as a Finder drive. This avoids exposing a live internal filesystem to simultaneous writes from the Mac and device.
 
 ## Data and recovery
 
