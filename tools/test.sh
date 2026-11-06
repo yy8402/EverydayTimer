@@ -21,6 +21,8 @@ c++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT/main" "$ROOT/main/duration.cpp" "$
 "$TMP/test-ui"
 c++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT/main" "$ROOT/main/clock_view.cpp" "$ROOT/main/refresh_scheduler.cpp" "$ROOT/tests/test_clock_scheduler.cpp" -o "$TMP/test-clock"
 "$TMP/test-clock"
+c++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT/main" "$ROOT/main/wav.cpp" "$ROOT/tests/test_wav.cpp" -o "$TMP/test-wav"
+"$TMP/test-wav"
 python3 -m unittest discover -s "$ROOT/tests" -p 'test_*.py' -v
 bash "$ROOT/tests/hardware/run.sh"
 bash -n "$ROOT/tools/flash_mac.sh" "$ROOT/tools/build.sh" "$ROOT/tools/test.sh"

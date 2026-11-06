@@ -1,4 +1,5 @@
 #include "activity_drive.h"
+#include "audio.h"
 #include "cJSON.h"
 #include "clock_view.h"
 #include "core.h"
@@ -53,6 +54,23 @@ bool switch_activity(int delta) {
     return false;
   redraw();
   return true;
+}
+bool start_timer(int64_t now, int64_t utc) {
+  if (!core.start(now, utc))
+    return false;
+  audio::start_run();
+  return true;
+}
+bool stop_timer(int64_t now, int64_t utc) {
+  const bool was_running = core.running();
+  const bool saved = core.stop(now, utc);
+  if (was_running && !core.running())
+    audio::stop_run();
+  return saved;
+}
+void load_drive_audio() {
+  audio::load("/usb/audio");
+  redraw();
 }
 std::string read_drive_activities() {
   Guard guard;
@@ -211,6 +229,7 @@ void display_task(void *) {
       Guard g;
       v = core.view(esp_timer_get_time(), clock_valid);
       v.utc_epoch = epoch();
+      v.audio_name = audio::selection();
       v.idle_smile = idle_screen.visible();
       if (!system_error.empty())
         v.error = system_error;
@@ -379,8 +398,8 @@ void command(const std::string &line) {
       redraw();
     } else if (name == "start" || name == "stop") {
       wake_timer();
-      bool ok = name == "start" ? core.start(esp_timer_get_time(), epoch())
-                                : core.stop(esp_timer_get_time(), epoch());
+      bool ok = name == "start" ? start_timer(esp_timer_get_time(), epoch())
+                                : stop_timer(esp_timer_get_time(), epoch());
       if (ok)
         result = status();
       else
@@ -474,8 +493,10 @@ extern "C" void app_main() {
   core.update_daily_stars(epoch(), clock_valid);
   if (!hardware_ok)
     system_error = "Hardware init failed; check USB status";
+  if (hardware_ok)
+    audio::init();
   if (activity_drive::init(read_drive_activities, apply_drive_activities,
-                           report_drive_error) != ESP_OK)
+                           report_drive_error, load_drive_audio) != ESP_OK)
     report_drive_error("USB activity drive unavailable");
   tinyusb_config_t usb = TINYUSB_DEFAULT_CONFIG();
   usb.task.size = 8192;
@@ -514,12 +535,18 @@ extern "C" void app_main() {
       down_presses += down;
       if (ok && !export_in_progress) {
         if (core.running())
-          core.stop(now, epoch());
+          stop_timer(now, epoch());
         else
-          core.start(now, epoch());
+          start_timer(now, epoch());
         redraw();
-      } else if (!core.running() && up != down) {
-        switch_activity(up ? -1 : 1);
+      } else if (up != down) {
+        const int direction = up ? -1 : 1;
+        if (core.running()) {
+          audio::cycle(direction);
+          redraw();
+        } else {
+          switch_activity(direction);
+        }
       }
     }
     {
@@ -531,6 +558,7 @@ extern "C" void app_main() {
       redraw(refresh_scheduler.poll(
           now, epoch(), clock_valid, core.running(),
           display_backend::capabilities().number_region_partial));
+      audio::poll();
     }
     vTaskDelay(pdMS_TO_TICKS(5));
   }

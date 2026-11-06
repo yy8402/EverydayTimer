@@ -161,7 +161,7 @@ bool hardware_init() {
     // The power latch must precede allocation, I2C, logging, or display work.
     if (!output(POWER_HOLD, 1)) return false;
     // V1.0 schematic R45/R46 pull I2C up to the audio rail (AVDD_3V3).
-    // Keep this rail powered for RTC communication; the amplifier remains off.
+    // Keep this rail powered for RTC communication, even during audio idle.
     // Turning the rail off while I2C is pulled high would backfeed the codec.
     if (!output(GPIO_NUM_46, 0) || !output(GPIO_NUM_42, 1) ||
         !output(GPIO_NUM_21, 0) || !output(LED, 1) || !output(EPD_POWER, 0)) return false;

@@ -41,6 +41,14 @@ int main() {
                      ticking.begin() + 8500));
   assert(std::equal(running.begin() + 21600, running.end(),
                     ticking.begin() + 21600));
+  view.audio_name = "05-gentle-finish.wav";
+  const auto with_audio = render(view);
+  assert(std::equal(ticking.begin(), ticking.begin() + 4200, with_audio.begin()));
+  assert(!std::equal(ticking.begin() + 6200, ticking.begin() + 8500,
+                     with_audio.begin() + 6200));
+  assert(std::equal(ticking.begin() + 8500, ticking.end(),
+                    with_audio.begin() + 8500));
+  view.audio_name.clear();
   view.running = false;
   view.has_completed_run = true;
   view.best_ms = 1000;

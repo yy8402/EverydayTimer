@@ -13,7 +13,7 @@ struct Action {
   int64_t best_ms = -1;
 };
 struct View {
-  std::string name, error;
+  std::string name, error, audio_name;
   size_t index = 0, total = 0;
   bool running = false, clock_valid = false, storage_ok = false;
   bool has_completed_run = false, idle_smile = false;

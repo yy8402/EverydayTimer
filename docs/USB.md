@@ -1,7 +1,7 @@
 # USB management (macOS)
 
 The timer does not need a network connection. The NOTE4C drive exposes the
-activity list. Clock settings and history use USB serial. These instructions assume the timer firmware is installed.
+activity list and optional sound effects. Clock settings and history use USB serial. These instructions assume the timer firmware is installed.
 Connect the Note4C with a data-capable USB cable and close serial monitors before
 using the manager. Commands below run from this project's folder.
 
@@ -78,8 +78,25 @@ A changed name starts a new category, and previous records remain in history.
 The timer applies valid edits when the USB host releases the drive. If the file
 is invalid or the timer is running, the timer keeps the previous list and reports
 the error on screen and in USB status. Reconnect to get a fresh copy of the active
-list. The drive uses its own flash partition and contains only the activity
-file and any housekeeping files written by the host.
+list.
+
+## Add WAV sound effects
+
+Create an `audio` folder beside `activities.txt` on the NOTE4C drive. Copy in
+mono, 16-bit PCM WAV files at 16 kHz. Give each file a distinct slot from
+`01` to `99`, for example `01-soft-ping.wav`, using printable ASCII names.
+The 256 KiB drive is shared with the activity list and filesystem overhead.
+Eject the drive in Finder to load the updated sounds. Unreadable or unsupported
+files are skipped.
+
+The device starts at `00 Off`, which needs no file. During a run, UP selects
+the previous occupied slot and DOWN selects the next, wrapping through `00`.
+The selected sound plays immediately when a run starts or you change the
+selection, then repeats every three seconds while timing. Selecting `00`
+silences playback immediately. The filename appears to the right of the
+activity, with long names shortened to fit. Stopping ends the repeat and plays
+the selected sound once. The selection carries into the next run. While
+stopped, UP and DOWN select activities.
 
 ## Advanced JSON activity management
 

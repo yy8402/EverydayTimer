@@ -148,7 +148,12 @@ void render_ui(uint8_t *frame, const timer_app::View &v) {
   text(378 - width(state, font_small), 28, state, font_small);
   rect(22, 42, 356, 1, BLACK);
 
-  text(22, 81, fit(v.name.empty() ? "Timer" : v.name, 356, font_title),
+  const auto audio_label = fit(v.audio_name, 164, font_small);
+  const int audio_width = width(audio_label, font_small);
+  if (audio_width)
+    text(378 - audio_width, 81, audio_label, font_small);
+  const int title_width = 356 - (audio_width ? audio_width + 12 : 0);
+  text(22, 81, fit(v.name.empty() ? "Timer" : v.name, title_width, font_title),
        font_title);
   const auto current = timer_app::format_duration(v.elapsed_ms);
   const Font &digits = duration_font(current);
