@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "actions": [
+    {"id": "activity-1", "name": "动作一"},
+    {"id": "activity-2", "name": "动作二"},
+    {"id": "activity-3", "name": "动作三"}
+  ]
+}

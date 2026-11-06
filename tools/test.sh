@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+: "${IDF_PATH:?Activate ESP-IDF first, or set IDF_PATH to its source checkout}"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+cc -c "$IDF_PATH/components/json/cJSON/cJSON.c" -o "$TMP/cjson.o"
+c++ -std=c++17 -Wall -Wextra -Werror -I"$IDF_PATH/components/json/cJSON" -I"$ROOT/main" "$ROOT/main/core.cpp" "$ROOT/main/clock_view.cpp" "$ROOT/tests/test_core.cpp" "$TMP/cjson.o" -o "$TMP/test-core"
+"$TMP/test-core"
+c++ -std=c++17 -Wall -Wextra -Werror -I"$IDF_PATH/components/json/cJSON" -I"$ROOT/main" "$ROOT/main/core.cpp" "$ROOT/main/clock_view.cpp" "$ROOT/tests/test_daily_stars.cpp" "$TMP/cjson.o" -o "$TMP/test-stars"
+"$TMP/test-stars"
+c++ -std=c++17 -Wall -Wextra -Werror -I"$IDF_PATH/components/json/cJSON" -I"$ROOT/main" "$ROOT/main/core.cpp" "$ROOT/main/clock_view.cpp" "$ROOT/tests/test_state_view.cpp" "$TMP/cjson.o" -o "$TMP/test-state-view"
+"$TMP/test-state-view"
+c++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT/tests/hardware/stubs" -I"$ROOT/main" "$ROOT/main/display_backend.cpp" "$ROOT/tests/test_display_backend.cpp" -o "$TMP/test-display"
+"$TMP/test-display"
+c++ -std=c++17 -Wall -Wextra -Werror -pthread -I"$IDF_PATH/components/json/cJSON" -I"$ROOT/tests/hardware/stubs" -I"$ROOT/main" "$ROOT/main/core.cpp" "$ROOT/main/clock_view.cpp" "$ROOT/main/display_backend.cpp" "$ROOT/tests/test_running_side_lock.cpp" "$TMP/cjson.o" -o "$TMP/test-running-side-lock"
+"$TMP/test-running-side-lock"
+c++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT/main" "$ROOT/main/duration.cpp" "$ROOT/main/clock_view.cpp" "$ROOT/main/ui.cpp" "$ROOT/tests/test_duration.cpp" -o "$TMP/test-duration"
+"$TMP/test-duration"
+c++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT/main" "$ROOT/main/duration.cpp" "$ROOT/main/clock_view.cpp" "$ROOT/main/ui.cpp" "$ROOT/tests/test_ui.cpp" -o "$TMP/test-ui"
+"$TMP/test-ui"
+c++ -std=c++17 -Wall -Wextra -Werror -I"$ROOT/main" "$ROOT/main/clock_view.cpp" "$ROOT/main/refresh_scheduler.cpp" "$ROOT/tests/test_clock_scheduler.cpp" -o "$TMP/test-clock"
+"$TMP/test-clock"
+python3 -m unittest discover -s "$ROOT/tests" -p 'test_*.py' -v
+bash "$ROOT/tests/hardware/run.sh"
+bash -n "$ROOT/tools/flash_mac.sh" "$ROOT/tools/build.sh" "$ROOT/tools/test.sh"

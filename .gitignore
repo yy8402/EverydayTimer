@@ -1,0 +1,23 @@
+build/
+managed_components/
+.venv/
+__pycache__/
+*.pyc
+backups/
+sdkconfig.old
+
+# Local build, release, and hardware verification output
+/build-*/
+/dist/
+/validation/
+.DS_Store
+/history.json
+
+# Historical package notes and screenshots retained locally
+/docs/firmware-preview*.png
+/docs/install-*.log
+/docs/HARDWARE_VALIDATION.md
+/docs/PARTIAL_REFRESH_TEST.md
+/docs/PROJECT_HANDOFF.md
+/docs/RELEASE_METADATA_CORRECTION.md
+/docs/VALIDATION.md
