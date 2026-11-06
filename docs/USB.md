@@ -1,7 +1,7 @@
 # USB management (macOS)
 
 The timer does not need a network connection. The NOTE4C drive exposes the
-activity list and optional sound effects. Clock settings and history use USB serial. These instructions assume the timer firmware is installed.
+activity list. Clock settings and history use USB serial. These instructions assume the timer firmware is installed.
 Connect the Note4C with a data-capable USB cable and close serial monitors before
 using the manager. Commands below run from this project's folder.
 
@@ -80,23 +80,17 @@ is invalid or the timer is running, the timer keeps the previous list and report
 the error on screen and in USB status. Reconnect to get a fresh copy of the active
 list.
 
-## Add WAV sound effects
+## Spoken time
 
-Create an `audio` folder beside `activities.txt` on the NOTE4C drive. Copy in
-mono, 16-bit PCM WAV files at 16 kHz. Give each file a distinct slot from
-`01` to `99`, for example `01-soft-ping.wav`, using printable ASCII names.
-The 256 KiB drive is shared with the activity list and filesystem overhead.
-Eject the drive in Finder to load the updated sounds. Unreadable or unsupported
-files are skipped.
+During a run, press UP to increase the announcement interval or DOWN to
+decrease it. The options are Off, 30 sec, 1 min, 3 min, 5 min and 10 min.
+The interval stops at either end of the list. While stopped, UP and DOWN
+select activities.
 
-The device starts at `00 Off`, which needs no file. During a run, UP selects
-the previous occupied slot and DOWN selects the next, wrapping through `00`.
-The selected sound plays immediately when a run starts or you change the
-selection, then repeats every three seconds while timing. Selecting `00`
-silences playback immediately. The filename appears to the right of the
-activity, with long names shortened to fit. Stopping ends the repeat and plays
-the selected sound once. The selection carries into the next run. While
-stopped, UP and DOWN select activities.
+The default is 1 min. The device saves changes across reboots and shows the
+current interval beside the activity. Mandarin announcements follow interval
+boundaries measured from the start of the run. With 30 sec selected you hear
+“三十秒”, “一分鐘” and “一分三十秒”. Off and stopping are silent.
 
 ## Advanced JSON activity management
 

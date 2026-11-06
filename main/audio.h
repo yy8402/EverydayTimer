@@ -1,14 +1,13 @@
 #pragma once
 
-#include <string>
+#include <cstdint>
 
 namespace audio {
+// After init, the timer model lock serializes these calls.
 void init();
-// Called only while the firmware owns the USB drive.
-void load(const char *directory);
-std::string selection();
-void cycle(int direction);
-void start_run();
+const char *selection();
+bool adjust_interval(int direction);
+void start_run(int64_t started);
 void stop_run();
 void poll();
 }

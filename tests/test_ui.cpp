@@ -41,7 +41,7 @@ int main() {
                      ticking.begin() + 8500));
   assert(std::equal(running.begin() + 21600, running.end(),
                     ticking.begin() + 21600));
-  view.audio_name = "05-gentle-finish.wav";
+  view.audio_name = "Voice 30 sec";
   const auto with_audio = render(view);
   assert(std::equal(ticking.begin(), ticking.begin() + 4200, with_audio.begin()));
   assert(!std::equal(ticking.begin() + 6200, ticking.begin() + 8500,

@@ -13,7 +13,6 @@ constexpr size_t max_file_size = 4096;
 ReadActivities read_activities;
 ApplyActivities apply_activities;
 ReportError report_error;
-Mounted drive_mounted;
 std::string original;
 bool exposed = false;
 
@@ -62,7 +61,6 @@ void storage_event(tinyusb_msc_storage_handle_t, tinyusb_msc_event_t *event,
     if (exposed)
       import_file();
     exposed = false;
-    drive_mounted();
   } else if (event->id == TINYUSB_MSC_EVENT_MOUNT_FAILED ||
              event->id == TINYUSB_MSC_EVENT_FORMAT_FAILED) {
     exposed = false;
@@ -71,12 +69,10 @@ void storage_event(tinyusb_msc_storage_handle_t, tinyusb_msc_event_t *event,
 }
 } // namespace
 
-esp_err_t init(ReadActivities read, ApplyActivities apply, ReportError report,
-               Mounted mounted) {
+esp_err_t init(ReadActivities read, ApplyActivities apply, ReportError report) {
   read_activities = read;
   apply_activities = apply;
   report_error = report;
-  drive_mounted = mounted;
   const auto *partition = esp_partition_find_first(
       ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, "activities");
   if (!partition)

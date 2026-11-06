@@ -1,5 +1,5 @@
 #include "audio.h"
-#include "wav.h"
+#include "voice.h"
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -10,33 +10,38 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 #include <algorithm>
-#include <array>
 #include <atomic>
-#include <dirent.h>
-#include <memory>
 #include <mutex>
-#include <strings.h>
 
 namespace {
 constexpr char tag[] = "timer_audio";
 constexpr size_t dma_frames = 128;
 constexpr size_t dma_buffers = 4;
 constexpr size_t block_frames = 256;
-constexpr int64_t repeat_interval_us = 3000000;
-
-struct Sound {
-  std::string filename;
-  std::vector<int16_t> pcm;
+constexpr int voice_volume = 72;
+constexpr unsigned sample_rate = 16000;
+constexpr int64_t second_us = 1000000;
+struct Interval {
+  uint16_t seconds;
+  const char *label;
 };
-using Clip = std::shared_ptr<const Sound>;
-using Catalog = std::array<Clip, 100>;
-Catalog sounds;
-unsigned selected = 0;
-int64_t repeat_at = 0;
+constexpr Interval intervals[] = {
+    {0, "Voice Off"}, {30, "Voice 30 sec"}, {60, "Voice 1 min"},
+    {180, "Voice 3 min"}, {300, "Voice 5 min"}, {600, "Voice 10 min"}};
+constexpr int interval_count = sizeof intervals / sizeof *intervals;
+constexpr int default_interval = 2;
+constexpr char interval_key[] = "interval";
+int selected = default_interval;
+nvs_handle_t settings = 0;
+int64_t run_started = 0;
+int64_t announce_at = 0;
+
 std::mutex mutex;
-Clip requested;
+uint64_t requested_seconds = 0;
 std::atomic<unsigned> revision{0};
 TaskHandle_t player = nullptr;
 
@@ -53,7 +58,7 @@ esp_codec_dev_handle_t open_device() {
   if (i2s_new_channel(&channel, &tx, nullptr) != ESP_OK)
     return nullptr;
   i2s_std_config_t config{};
-  config.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(wav::sample_rate);
+  config.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate);
   config.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
       I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
   config.gpio_cfg.mclk = GPIO_NUM_14;
@@ -110,24 +115,25 @@ esp_codec_dev_handle_t open_device() {
   return device;
 }
 
-void play(esp_codec_dev_handle_t device, const Sound &sound, unsigned request) {
+void play(esp_codec_dev_handle_t device, const std::vector<int16_t> &pcm,
+          unsigned request) {
   esp_codec_dev_sample_info_t format{};
   format.bits_per_sample = 16;
   format.channel = 2;
-  format.sample_rate = wav::sample_rate;
+  format.sample_rate = sample_rate;
   if (esp_codec_dev_open(device, &format) != ESP_CODEC_DEV_OK) {
     ESP_LOGW(tag, "Cannot open audio output");
     return;
   }
-  esp_codec_dev_set_out_vol(device, 55);
+  esp_codec_dev_set_out_vol(device, voice_volume);
   int16_t stereo[block_frames * 2];
   // Send enough trailing silence to let the last PCM frames leave DMA.
-  const size_t frames = sound.pcm.size() + dma_frames * dma_buffers;
+  const size_t frames = pcm.size() + dma_frames * dma_buffers;
   for (size_t offset = 0; offset < frames && revision.load() == request;) {
     const size_t count = std::min(block_frames, frames - offset);
     for (size_t i = 0; i < count; ++i) {
       const size_t index = offset + i;
-      const auto sample = index < sound.pcm.size() ? sound.pcm[index] : 0;
+      const auto sample = index < pcm.size() ? pcm[index] : 0;
       stereo[2 * i] = stereo[2 * i + 1] = sample;
     }
     if (esp_codec_dev_write(device, stereo, count * 2 * sizeof(int16_t)) !=
@@ -144,120 +150,95 @@ void player_task(void *) {
   esp_codec_dev_handle_t device = nullptr;
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    Clip clip;
+    uint64_t seconds;
     unsigned request;
     {
       std::lock_guard lock(mutex);
-      // A newer notification may have arrived before taking the lock.
       ulTaskNotifyTake(pdTRUE, 0);
-      clip = std::move(requested);
+      seconds = requested_seconds;
       request = revision.load();
     }
-    if (!clip)
+    if (!seconds)
       continue;
     if (!device)
       device = open_device();
     if (device)
-      play(device, *clip, request);
+      play(device, voice::render(seconds), request);
     else
       ESP_LOGW(tag, "Speaker initialization failed");
   }
 }
 
-void enqueue_selection() {
+void enqueue(uint64_t seconds) {
   if (!player)
     return;
-  requested = sounds[selected];
+  std::lock_guard lock(mutex);
+  requested_seconds = seconds;
   ++revision;
   xTaskNotifyGive(player);
 }
 
-void play_and_schedule_repeat() {
-  repeat_at = selected ? esp_timer_get_time() + repeat_interval_us : 0;
-  enqueue_selection();
-}
-
-unsigned slot_for(const std::string &name) {
-  if (name.size() < 6 || name[0] < '0' || name[0] > '9' ||
-      name[1] < '0' || name[1] > '9' ||
-      (name[2] != '-' && name[2] != '.') ||
-      strcasecmp(name.c_str() + name.size() - 4, ".wav") != 0 ||
-      !std::all_of(name.begin(), name.end(),
-                   [](unsigned char c) { return c >= 32 && c <= 126; }))
-    return 0;
-  return 10 * (name[0] - '0') + name[1] - '0';
+void schedule(int64_t now) {
+  const int64_t interval = intervals[selected].seconds * second_us;
+  announce_at = interval ? run_started + ((now - run_started) / interval + 1) * interval : 0;
 }
 } // namespace
 
 void audio::init() {
-  if (xTaskCreate(player_task, "audio", 4096, nullptr, 2, &player) != pdPASS)
-    ESP_LOGW(tag, "Cannot create speaker task");
-}
-
-void audio::load(const char *directory) {
-  Catalog loaded;
-  if (DIR *dir = opendir(directory)) {
-    while (const auto *entry = readdir(dir)) {
-      std::string name = entry->d_name;
-      const unsigned slot = slot_for(name);
-      // Resolve duplicate numbers in filename order.
-      if (!slot || (loaded[slot] && loaded[slot]->filename <= name))
-        continue;
-      const std::string path = std::string(directory) + "/" + name;
-      std::unique_ptr<FILE, decltype(&std::fclose)> file(
-          std::fopen(path.c_str(), "rb"), std::fclose);
-      if (!file)
-        continue;
-      auto pcm = wav::read_pcm(file.get());
-      if (pcm.empty()) {
-        ESP_LOGW(tag, "Skipping invalid WAV: %s", name.c_str());
-        continue;
+  if (nvs_flash_init() == ESP_OK &&
+      nvs_open("timer_audio", NVS_READWRITE, &settings) == ESP_OK) {
+    uint16_t seconds;
+    if (nvs_get_u16(settings, interval_key, &seconds) == ESP_OK) {
+      for (int i = 0; i < interval_count; ++i) {
+        if (intervals[i].seconds == seconds) {
+          selected = i;
+          break;
+        }
       }
-      loaded[slot] = std::make_shared<Sound>(Sound{std::move(name), std::move(pcm)});
     }
-    closedir(dir);
+  } else {
+    ESP_LOGE(tag, "Cannot open announcement settings");
   }
-  std::lock_guard lock(mutex);
-  sounds.swap(loaded);
-  if (selected && !sounds[selected]) {
-    selected = 0;
-    if (repeat_at) {
-      repeat_at = 0;
-      enqueue_selection();
-    }
-  }
+  if (xTaskCreate(player_task, "audio", 4096, nullptr, 2, &player) != pdPASS)
+    ESP_LOGE(tag, "Cannot create speaker task");
 }
 
-std::string audio::selection() {
-  std::lock_guard lock(mutex);
-  return sounds[selected] ? sounds[selected]->filename : "00 Off";
+const char *audio::selection() {
+  return intervals[selected].label;
 }
 
-void audio::cycle(int direction) {
-  std::lock_guard lock(mutex);
-  const int count = sounds.size();
-  do {
-    selected = (int(selected) + direction + count) % count;
-  } while (selected && !sounds[selected]);
-  play_and_schedule_repeat();
+bool audio::adjust_interval(int direction) {
+  const int next = std::clamp(selected + direction, 0, interval_count - 1);
+  if (next == selected)
+    return true;
+  if (!settings ||
+      nvs_set_u16(settings, interval_key, intervals[next].seconds) != ESP_OK ||
+      nvs_commit(settings) != ESP_OK)
+    return false;
+  selected = next;
+  schedule(esp_timer_get_time());
+  enqueue(0);
+  return true;
 }
 
-void audio::start_run() {
-  std::lock_guard lock(mutex);
-  play_and_schedule_repeat();
+void audio::start_run(int64_t started) {
+  run_started = started;
+  schedule(esp_timer_get_time());
 }
 
 void audio::stop_run() {
-  std::lock_guard lock(mutex);
-  repeat_at = 0;
-  enqueue_selection();
+  announce_at = 0;
+  enqueue(0);
 }
 
 void audio::poll() {
-  std::lock_guard lock(mutex);
+  if (!announce_at)
+    return;
   const int64_t now = esp_timer_get_time();
-  if (repeat_at && now >= repeat_at) {
-    repeat_at = now + repeat_interval_us;
-    enqueue_selection();
+  if (now >= announce_at) {
+    const int64_t interval = intervals[selected].seconds;
+    const auto boundary = (now - run_started) / (interval * second_us);
+    enqueue(boundary * interval);
+    schedule(now);
   }
 }

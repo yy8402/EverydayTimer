@@ -28,6 +28,7 @@ timer_app::Core core("/data");
 SemaphoreHandle_t model_mutex;
 TaskHandle_t display_task_handle;
 bool export_in_progress = false;
+bool audio_settings_error = false;
 timer_app::IdleScreen idle_screen;
 bool clock_valid = false, hardware_ok = false, filesystem_ok = false,
      display_ok = true;
@@ -58,7 +59,7 @@ bool switch_activity(int delta) {
 bool start_timer(int64_t now, int64_t utc) {
   if (!core.start(now, utc))
     return false;
-  audio::start_run();
+  audio::start_run(now);
   return true;
 }
 bool stop_timer(int64_t now, int64_t utc) {
@@ -67,10 +68,6 @@ bool stop_timer(int64_t now, int64_t utc) {
   if (was_running && !core.running())
     audio::stop_run();
   return saved;
-}
-void load_drive_audio() {
-  audio::load("/usb/audio");
-  redraw();
 }
 std::string read_drive_activities() {
   Guard guard;
@@ -145,6 +142,7 @@ cJSON *status() {
       v.running ? "running" : (v.has_completed_run ? "stopped" : "ready"));
   cJSON_AddNumberToObject(r, "up_presses", up_presses);
   cJSON_AddNumberToObject(r, "down_presses", down_presses);
+  cJSON_AddStringToObject(r, "audio_selection", audio::selection());
   cJSON_AddBoolToObject(r, "up_pressed", gpio_get_level(BTN_UP) == 0);
   cJSON_AddBoolToObject(r, "down_pressed", gpio_get_level(BTN_DOWN) == 0);
   cJSON_AddBoolToObject(r, "clock_valid", clock_valid);
@@ -235,6 +233,8 @@ void display_task(void *) {
         v.error = system_error;
       else if (!activity_drive_error.empty())
         v.error = activity_drive_error;
+      else if (audio_settings_error)
+        v.error = "Cannot save voice interval";
       if (export_in_progress)
         v.error = "USB EXPORT - WAIT TO START";
     }
@@ -450,9 +450,9 @@ struct Button {
   int raw = 1, stable = 1;
   int64_t changed = 0;
   bool pressed(int64_t now) {
-    int r = gpio_get_level(pin);
-    if (r != raw) {
-      raw = r;
+    const int level = gpio_get_level(pin);
+    if (level != raw) {
+      raw = level;
       changed = now;
     }
     if (raw != stable && now - changed >= 20000) {
@@ -496,7 +496,7 @@ extern "C" void app_main() {
   if (hardware_ok)
     audio::init();
   if (activity_drive::init(read_drive_activities, apply_drive_activities,
-                           report_drive_error, load_drive_audio) != ESP_OK)
+                           report_drive_error) != ESP_OK)
     report_drive_error("USB activity drive unavailable");
   tinyusb_config_t usb = TINYUSB_DEFAULT_CONFIG();
   usb.task.size = 8192;
@@ -528,29 +528,27 @@ extern "C" void app_main() {
     const bool up = buttons[0].pressed(now);
     const bool down = buttons[1].pressed(now);
     const bool ok = buttons[2].pressed(now);
-    if (up || down || ok) {
-      Guard guard;
-      wake_timer();
-      up_presses += up;
-      down_presses += down;
-      if (ok && !export_in_progress) {
-        if (core.running())
-          stop_timer(now, epoch());
-        else
-          start_timer(now, epoch());
-        redraw();
-      } else if (up != down) {
-        const int direction = up ? -1 : 1;
-        if (core.running()) {
-          audio::cycle(direction);
-          redraw();
-        } else {
-          switch_activity(direction);
-        }
-      }
-    }
     {
       Guard guard;
+      if (up || down || ok) {
+        wake_timer();
+        up_presses += up;
+        down_presses += down;
+        if (ok && !export_in_progress) {
+          if (core.running())
+            stop_timer(now, epoch());
+          else
+            start_timer(now, epoch());
+          redraw();
+        } else if (up != down) {
+          if (core.running()) {
+            audio_settings_error = !audio::adjust_interval(up ? 1 : -1);
+            redraw();
+          } else {
+            switch_activity(up ? -1 : 1);
+          }
+        }
+      }
       if (idle_screen.update(esp_timer_get_time(),
                              core.running() || export_in_progress))
         redraw();
