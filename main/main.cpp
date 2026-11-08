@@ -1,5 +1,6 @@
 #include "activity_drive.h"
 #include "audio.h"
+#include "wifi_audio.h"
 #include "cJSON.h"
 #include "clock_view.h"
 #include "core.h"
@@ -32,7 +33,7 @@ bool audio_settings_error = false;
 timer_app::IdleScreen idle_screen;
 bool clock_valid = false, hardware_ok = false, filesystem_ok = false,
      display_ok = true;
-std::string system_error, activity_drive_error;
+std::string system_error, activity_drive_error, history_drive_notice;
 unsigned up_presses = 0, down_presses = 0;
 std::atomic<unsigned> pending_updates{unsigned(display_backend::Update::Full)};
 struct Guard {
@@ -46,9 +47,13 @@ void redraw(display_backend::Update requested = display_backend::Update::Full) {
   if (display_task_handle)
     xTaskNotifyGive(display_task_handle);
 }
-void wake_timer() {
-  if (idle_screen.update(esp_timer_get_time(), true))
+bool wake_timer() {
+  const bool woke = idle_screen.update(esp_timer_get_time(), true);
+  if (woke) {
+    core.select_demo();
     redraw();
+  }
+  return woke;
 }
 bool switch_activity(int delta) {
   if (!core.select(delta))
@@ -90,6 +95,30 @@ void apply_drive_activities(const std::string &original, std::string edited) {
   wake_timer();
   redraw();
 }
+bool export_drive_history(FILE *output, uint64_t &revision) {
+  Guard guard;
+  revision = core.history_revision();
+  return core.write_history_csv(output);
+}
+
+bool clear_drive_history(uint64_t revision) {
+  Guard guard;
+  if (export_in_progress || core.history_revision() != revision)
+    activity_drive_error = "History changed; reconnect and retry";
+  else if (!core.clear_history())
+    activity_drive_error = core.error();
+  else {
+    activity_drive_error.clear();
+    history_drive_notice = "History cleared";
+    wake_timer();
+    redraw();
+    return true;
+  }
+  wake_timer();
+  redraw();
+  return false;
+}
+
 int64_t epoch() { return clock_valid ? (int64_t)time(nullptr) : 0; }
 bool send_bytes(const char *b, size_t n) {
   int64_t limit = esp_timer_get_time() + 10000000;
@@ -133,7 +162,7 @@ cJSON *status() {
     redraw();
   const auto v = core.view(esp_timer_get_time(), clock_valid);
   cJSON *r = cJSON_CreateObject();
-  cJSON_AddStringToObject(r, "firmware", "note4c-timer/1.6.1");
+  cJSON_AddStringToObject(r, "firmware", "note4c-timer/1.12.0");
   cJSON_AddStringToObject(r, "board", "NOTE4C ESP32-S3 N16R8 SSD2683");
   cJSON_AddBoolToObject(r, "running", v.running);
   cJSON_AddBoolToObject(r, "idle_smile", idle_screen.visible());
@@ -143,6 +172,7 @@ cJSON *status() {
   cJSON_AddNumberToObject(r, "up_presses", up_presses);
   cJSON_AddNumberToObject(r, "down_presses", down_presses);
   cJSON_AddStringToObject(r, "audio_selection", audio::selection());
+  cJSON_AddStringToObject(r, "wifi_audio", wifi_audio::status());
   cJSON_AddBoolToObject(r, "up_pressed", gpio_get_level(BTN_UP) == 0);
   cJSON_AddBoolToObject(r, "down_pressed", gpio_get_level(BTN_DOWN) == 0);
   cJSON_AddBoolToObject(r, "clock_valid", clock_valid);
@@ -233,6 +263,8 @@ void display_task(void *) {
         v.error = system_error;
       else if (!activity_drive_error.empty())
         v.error = activity_drive_error;
+      else if (!history_drive_notice.empty())
+        v.error = history_drive_notice;
       else if (audio_settings_error)
         v.error = "Cannot save voice interval";
       if (export_in_progress)
@@ -314,7 +346,22 @@ void command(const std::string &line) {
     Guard guard;
     if (name == "status")
       result = status();
-    else if (name == "previous_activity" || name == "next_activity") {
+    else if (name == "wifi_config") {
+      const char *failure = wifi_audio::configure(r);
+      if (failure)
+        error = failure;
+      else {
+        result = cJSON_CreateObject();
+        cJSON_AddBoolToObject(result, "restart_required", true);
+      }
+    }
+    else if (name == "wifi_pair") {
+      const char *failure = hardware_ok ? wifi_audio::pair(r) : "Audio hardware unavailable";
+      if (failure)
+        error = failure;
+      else
+        result = status();
+    } else if (name == "previous_activity" || name == "next_activity") {
       wake_timer();
       if (switch_activity(name == "previous_activity" ? -1 : 1))
         result = status();
@@ -449,7 +496,7 @@ struct Button {
   gpio_num_t pin;
   int raw = 1, stable = 1;
   int64_t changed = 0;
-  bool pressed(int64_t now) {
+  bool update(int64_t now) {
     const int level = gpio_get_level(pin);
     if (level != raw) {
       raw = level;
@@ -457,7 +504,7 @@ struct Button {
     }
     if (raw != stable && now - changed >= 20000) {
       stable = raw;
-      return stable == 0;
+      return true;
     }
     return false;
   }
@@ -479,6 +526,8 @@ extern "C" void app_main() {
   if (filesystem_ok) {
     if (!core.init())
       system_error = "Storage recovery needs attention";
+    else
+      core.select_demo();
   } else
     system_error = "Storage unreadable; preserved. Export backup.";
   // A plausible old RTC calendar may be local time from previous firmware.
@@ -493,10 +542,13 @@ extern "C" void app_main() {
   core.update_daily_stars(epoch(), clock_valid);
   if (!hardware_ok)
     system_error = "Hardware init failed; check USB status";
-  if (hardware_ok)
+  if (hardware_ok) {
     audio::init();
+    wifi_audio::init();
+  }
   if (activity_drive::init(read_drive_activities, apply_drive_activities,
-                           report_drive_error) != ESP_OK)
+                           report_drive_error, export_drive_history,
+                           clear_drive_history) != ESP_OK)
     report_drive_error("USB activity drive unavailable");
   tinyusb_config_t usb = TINYUSB_DEFAULT_CONFIG();
   usb.task.size = 8192;
@@ -515,6 +567,8 @@ extern "C" void app_main() {
     b.raw = b.stable = gpio_get_level(b.pin);
     b.changed = esp_timer_get_time();
   }
+  int64_t front_down_at = 0;
+  constexpr int64_t voice_hold_us = 900000;
   timer_app::RefreshScheduler refresh_scheduler;
   for (;;) {
     int64_t now = esp_timer_get_time();
@@ -525,22 +579,42 @@ extern "C" void app_main() {
         redraw(); // Stars lie outside the clock/number partial regions.
     }
     now = esp_timer_get_time(); // Idle reset writes must not stale input time.
-    const bool up = buttons[0].pressed(now);
-    const bool down = buttons[1].pressed(now);
-    const bool ok = buttons[2].pressed(now);
+    const bool up = buttons[0].update(now) && buttons[0].stable == 0;
+    const bool down = buttons[1].update(now) && buttons[1].stable == 0;
+    auto &front = buttons[2];
+    const bool front_changed = front.update(now);
+    bool ok = false;
+    if (front_changed) {
+      if (front.stable == 0)
+        front_down_at = now;
+      else {
+        ok = front_down_at && front.changed - front_down_at < voice_hold_us;
+        if (front_down_at && !ok)
+          wifi_audio::voice_button();
+        front_down_at = 0;
+      }
+    }
+    if (front_down_at && front.raw == 0 && now - front_down_at >= voice_hold_us) {
+      wifi_audio::voice_button();
+      front_down_at = 0;
+    }
     {
       Guard guard;
       if (up || down || ok) {
-        wake_timer();
+        if (!history_drive_notice.empty()) {
+          history_drive_notice.clear();
+          redraw();
+        }
+        const bool woke = wake_timer();
         up_presses += up;
         down_presses += down;
-        if (ok && !export_in_progress) {
+        if (!woke && ok && !export_in_progress) {
           if (core.running())
             stop_timer(now, epoch());
           else
             start_timer(now, epoch());
           redraw();
-        } else if (up != down) {
+        } else if (!woke && up != down) {
           if (core.running()) {
             audio_settings_error = !audio::adjust_interval(up ? 1 : -1);
             redraw();

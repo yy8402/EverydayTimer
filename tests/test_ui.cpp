@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <limits>
 
-extern const uint8_t test_cjk_stub[96] asm("_binary_cjk_bin_start") = {0};
+const uint8_t *cjk_font() { return nullptr; }
 
 using Frame = std::array<uint8_t, 30000>;
 

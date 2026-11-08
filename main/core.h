@@ -1,6 +1,7 @@
 #pragma once
 #include "clock_view.h"
 #include <cstdint>
+#include <cstdio>
 #include <map>
 #include <string>
 #include <vector>
@@ -10,14 +11,14 @@ constexpr size_t kMaxHistoryBytes = 8 * 1024 * 1024;
 constexpr size_t kMaxStarActionIDs = 1024;
 struct Action {
   std::string id, name;
-  int64_t best_ms = -1;
+  int64_t best_ms = -1, last_ms = -1;
 };
 struct View {
   std::string name, error, audio_name;
   size_t index = 0, total = 0;
   bool running = false, clock_valid = false, storage_ok = false;
   bool has_completed_run = false, idle_smile = false;
-  int64_t elapsed_ms = 0, best_ms = -1, utc_epoch = 0;
+  int64_t elapsed_ms = 0, best_ms = -1, last_ms = -1, utc_epoch = 0;
   int utc_offset_minutes = DEFAULT_UTC_OFFSET_MINUTES;
   uint64_t daily_stars = 0;
   bool stars_available = false;
@@ -34,7 +35,10 @@ public:
   // changed.
   bool update_daily_stars(int64_t utc_epoch, bool clock_valid);
   bool clear_history();
+  bool write_history_csv(FILE *output) const;
+  uint64_t history_revision() const { return history_revision_; }
   bool select(int delta);
+  bool select_demo() { return select(-static_cast<int>(selected_)); }
   bool start(int64_t monotonic_us, int64_t epoch);
   bool stop(int64_t monotonic_us, int64_t epoch);
   bool set_actions(const cJSON *doc);
@@ -63,13 +67,14 @@ private:
   std::string root_, error_, pending_completed_, star_error_;
   std::map<std::string, int64_t> historical_bests_;
   std::vector<Action> actions_;
-  size_t selected_ = 0, count_ = 0;
+  size_t selected_ = 1, count_ = 0;  // Index zero is the built-in Demo.
   int64_t started_us_ = 0, started_epoch_ = 0, last_seq_ = 0, active_seq_ = 0,
           frozen_ms_ = -1;
   bool running_ = false, storage_ok_ = false, save_pending_ = false;
   int utc_offset_minutes_ = DEFAULT_UTC_OFFSET_MINUTES;
   int64_t star_generation_ = 0, star_bucket_ = -1, max_star_generation_ = 0;
   uint64_t daily_stars_ = 0;
+  uint64_t history_revision_ = 0;
   bool stars_available_ = false, star_state_ok_ = true, star_replay_ok_ = true,
        star_state_dirty_ = false;
 };

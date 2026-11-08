@@ -9,7 +9,7 @@
 #include <vector>
 // These tests use English labels. CJK shape verification uses the real binary
 // asset in the separately generated Chinese renderer preview.
-extern const uint8_t test_cjk_stub[96] asm("_binary_cjk_bin_start")={0};
+const uint8_t *cjk_font() { return nullptr; }
 int checks=0;
 #define CHECK(x) do{++checks;if(!(x)){fprintf(stderr,"Failed line %d: %s\n",__LINE__,#x);std::abort();}}while(0)
 int main(){

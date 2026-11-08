@@ -197,9 +197,13 @@ void Core::update_stats(const cJSON *r) {
         generation == star_generation_ && bucket == star_bucket_)
       ++daily_stars_;
   }
-  for (auto &a : actions_)
-    if (a.id == id && (a.best_ms < 0 || duration < a.best_ms))
-      a.best_ms = duration;
+  for (auto &a : actions_) {
+    if (a.id == id) {
+      a.last_ms = duration;
+      if (a.best_ms < 0 || duration < a.best_ms)
+        a.best_ms = duration;
+    }
+  }
 }
 static bool iso_timestamp(const char *s) {
   if (strlen(s) != 20 || s[4] != '-' || s[7] != '-' || s[10] != 'T' ||
@@ -247,7 +251,7 @@ bool Core::scan_history() {
   daily_stars_ = 0;
   max_star_generation_ = 0;
   for (auto &a : actions_) {
-    a.best_ms = -1;
+    a.best_ms = a.last_ms = -1;
   }
   count_ = 0;
   last_seq_ = 0;
@@ -357,6 +361,7 @@ bool Core::append_record(const cJSON *r) {
     storage_ok_ = false;
     return fail("Run not confirmed saved; restart to recover pending record");
   }
+  ++history_revision_;
   count_++;
   last_seq_ = (int64_t)num(r, "seq");
   update_stats(r);
@@ -528,6 +533,57 @@ bool Core::init() {
     error_.clear();
   return storage_ok_;
 }
+bool Core::write_history_csv(FILE *output) const {
+  if (!storage_ok_ || save_pending_)
+    return false;
+  FILE *input = fopen(history_path().c_str(), "rb");
+  if (!input)
+    return false;
+  char line[1024];
+  bool ok = fgets(line, sizeof line, input) && strcmp(line, kHeader) == 0 &&
+      fputs("\xef\xbb\xbf" "sequence,activity,started_at,ended_at,duration_ms,status,new_best\r\n",
+            output) >= 0;
+  size_t rows = 0;
+  bool footer = false;
+  while (ok && fgets(line, sizeof line, input)) {
+    if (strcmp(line, kFooter) == 0) {
+      footer = fgetc(input) == EOF && !ferror(input);
+      break;
+    }
+    const char *payload = line + (rows != 0 && line[0] == ',');
+    auto *record = cJSON_ParseWithOpts(payload, nullptr, true);
+    if (!record || !valid_record(record, false)) {
+      cJSON_Delete(record);
+      ok = false;
+      break;
+    }
+    const auto *name = str(record, "action_name");
+    const auto *first = name + strspn(name, " \t\r\n");
+    const bool formula = *first && strchr("=+-@", *first);
+    std::string cell(1, '"');
+    if (formula)
+      cell += '\'';
+    for (const char *c = name; *c; ++c) {
+      if (*c == '"')
+        cell += '"';
+      cell += *c;
+    }
+    cell += '"';
+    const auto *duration = cJSON_GetObjectItemCaseSensitive(record, "duration_ms");
+    const auto *best = cJSON_GetObjectItemCaseSensitive(record, "new_best");
+    ok = fprintf(output, "%lld,%s,%s,%s,", static_cast<long long>(num(record, "seq")),
+                 cell.c_str(), str(record, "started_at"), str(record, "ended_at")) >= 0;
+    if (ok && cJSON_IsNumber(duration))
+      ok = fprintf(output, "%lld", static_cast<long long>(duration->valuedouble)) >= 0;
+    ok = ok && fprintf(output, ",%s,%s\r\n", str(record, "status"),
+                       cJSON_IsBool(best) ? (cJSON_IsTrue(best) ? "true" : "false") : "") >= 0;
+    cJSON_Delete(record);
+    ++rows;
+  }
+  fclose(input);
+  return ok && footer && rows == count_;
+}
+
 bool Core::clear_history() {
   if (!storage_ok_ || running_ || save_pending_)
     return fail("Stop and save the timer before clearing history");
@@ -536,6 +592,7 @@ bool Core::clear_history() {
     return fail("Restart to recover the pending run before clearing history");
   if (!atomic_write("history.json", std::string(kHeader) + kFooter))
     return false;
+  ++history_revision_;
   storage_ok_ = scan_history();
   if (storage_ok_)
     error_.clear();
@@ -547,9 +604,8 @@ bool Core::clear_history() {
 bool Core::select(int delta) {
   if (running_ || save_pending_)
     return fail("Stop and save current run before changing activity");
-  if (actions_.empty())
-    return false;
-  selected_ = (selected_ + actions_.size() + delta) % actions_.size();
+  const int total = static_cast<int>(actions_.size() + 1);
+  selected_ = (static_cast<int>(selected_) + delta % total + total) % total;
   frozen_ms_ = -1;
   error_.clear();
   return true;
@@ -559,6 +615,12 @@ bool Core::start(int64_t mono, int64_t epoch) {
     return fail("Storage needs attention; new run blocked");
   if (running_)
     return fail("Already running");
+  if (selected_ == 0 || actions_.empty()) {
+    started_us_ = mono;
+    running_ = true;
+    error_.clear();
+    return true;
+  }
   if (utc_iso(epoch).empty())
     return fail("Sync clock over USB before first run");
   update_daily_stars(epoch, true);
@@ -566,7 +628,7 @@ bool Core::start(int64_t mono, int64_t epoch) {
   if (stat(history_path().c_str(), &st) != 0 ||
       (size_t)st.st_size + 2048 > kMaxHistoryBytes)
     return fail("History full; export and archive first");
-  const auto &a = actions_[selected_];
+  const auto &a = actions_[selected_ - 1];
   active_seq_ = last_seq_ + 1;
   started_epoch_ = epoch;
   started_us_ = mono;
@@ -590,9 +652,13 @@ bool Core::stop(int64_t mono, int64_t epoch) {
   if (running_) {
     frozen_ms_ = std::max<int64_t>(0, (mono - started_us_) / 1000);
     running_ = false;
+    if (selected_ == 0 || actions_.empty()) {
+      error_.clear();
+      return true;
+    }
     save_pending_ = true;
     update_daily_stars(epoch, !utc_iso(epoch).empty());
-    const auto &a = actions_[selected_];
+    const auto &a = actions_[selected_ - 1];
     const bool new_best = a.best_ms < 0 || frozen_ms_ < a.best_ms;
     cJSON *r = cJSON_CreateObject();
     cJSON_AddNumberToObject(r, "seq", active_seq_);
@@ -698,7 +764,7 @@ bool Core::set_actions(const cJSON *d) {
     return false;
   actions_ = next;
   frozen_ms_ = -1;
-  selected_ = 0;
+  selected_ = 1;
   if (!scan_history()) {
     storage_ok_ = false;
     return false;
@@ -708,8 +774,8 @@ bool Core::set_actions(const cJSON *d) {
 }
 View Core::view(int64_t mono, bool clock_valid) const {
   View v;
-  v.index = selected_;
-  v.total = actions_.size();
+  v.index = actions_.empty() ? 0 : selected_;
+  v.total = actions_.size() + 1;
   v.clock_valid = clock_valid;
   v.utc_offset_minutes = utc_offset_minutes_;
   v.running = running_;
@@ -718,14 +784,16 @@ View Core::view(int64_t mono, bool clock_valid) const {
   v.stars_available =
       stars_available_ && clock_valid && storage_ok_ && star_replay_ok_;
   v.daily_stars = v.stars_available ? daily_stars_ : 0;
-  if (!actions_.empty()) {
-    const auto &a = actions_[selected_];
+  v.name = "Demo";
+  if (v.index != 0) {
+    const auto &a = actions_[v.index - 1];
     v.name = a.name;
-    v.has_completed_run = frozen_ms_ >= 0;
     v.best_ms = a.best_ms;
-    v.elapsed_ms = running_ ? std::max<int64_t>(0, (mono - started_us_) / 1000)
-                            : std::max<int64_t>(0, frozen_ms_);
+    v.last_ms = a.last_ms;
   }
+  v.has_completed_run = frozen_ms_ >= 0;
+  v.elapsed_ms = running_ ? std::max<int64_t>(0, (mono - started_us_) / 1000)
+                          : std::max<int64_t>(0, frozen_ms_);
   return v;
 }
 } // namespace timer_app

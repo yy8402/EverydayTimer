@@ -23,7 +23,7 @@ constexpr size_t dma_frames = 128;
 constexpr size_t dma_buffers = 4;
 constexpr size_t block_frames = 256;
 constexpr int voice_volume = 72;
-constexpr unsigned sample_rate = 16000;
+using audio::sample_rate;
 constexpr int64_t second_us = 1000000;
 struct Interval {
   uint16_t seconds;
@@ -41,8 +41,10 @@ int64_t run_started = 0;
 int64_t announce_at = 0;
 
 std::mutex mutex;
+std::mutex codec_mutex;
 uint64_t requested_seconds = 0;
 std::atomic<unsigned> revision{0};
+unsigned handled_revision = 0;  // Protected by codec_mutex.
 TaskHandle_t player = nullptr;
 
 esp_codec_dev_handle_t open_device() {
@@ -50,12 +52,12 @@ esp_codec_dev_handle_t open_device() {
   if (i2c_master_get_bus_handle(I2C_NUM_0, &bus) != ESP_OK)
     return nullptr;
 
-  i2s_chan_handle_t tx = nullptr;
+  i2s_chan_handle_t tx = nullptr, rx = nullptr;
   i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   channel.dma_desc_num = dma_buffers;
   channel.dma_frame_num = dma_frames;
   channel.auto_clear_after_cb = true;
-  if (i2s_new_channel(&channel, &tx, nullptr) != ESP_OK)
+  if (i2s_new_channel(&channel, &tx, &rx) != ESP_OK)
     return nullptr;
   i2s_std_config_t config{};
   config.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate);
@@ -65,8 +67,10 @@ esp_codec_dev_handle_t open_device() {
   config.gpio_cfg.bclk = GPIO_NUM_15;
   config.gpio_cfg.ws = GPIO_NUM_38;
   config.gpio_cfg.dout = GPIO_NUM_45;
-  config.gpio_cfg.din = GPIO_NUM_NC;
-  if (i2s_channel_init_std_mode(tx, &config) != ESP_OK) {
+  config.gpio_cfg.din = GPIO_NUM_16;
+  if (i2s_channel_init_std_mode(tx, &config) != ESP_OK ||
+      i2s_channel_init_std_mode(rx, &config) != ESP_OK) {
+    i2s_del_channel(rx);
     i2s_del_channel(tx);
     return nullptr;
   }
@@ -74,6 +78,7 @@ esp_codec_dev_handle_t open_device() {
   audio_codec_i2s_cfg_t data_cfg{};
   data_cfg.port = I2S_NUM_0;
   data_cfg.tx_handle = tx;
+  data_cfg.rx_handle = rx;
   audio_codec_i2c_cfg_t control_cfg{};
   control_cfg.port = I2C_NUM_0;
   control_cfg.addr = ES8311_CODEC_DEFAULT_ADDR;
@@ -87,7 +92,7 @@ esp_codec_dev_handle_t open_device() {
     es8311_codec_cfg_t codec_cfg{};
     codec_cfg.ctrl_if = control;
     codec_cfg.gpio_if = gpio;
-    codec_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_DAC;
+    codec_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH;
     codec_cfg.pa_pin = GPIO_NUM_46;
     codec_cfg.use_mclk = true;
     codec_cfg.hw_gain.pa_voltage = 5.0;
@@ -95,7 +100,7 @@ esp_codec_dev_handle_t open_device() {
     codec = es8311_codec_new(&codec_cfg);
     if (codec) {
       esp_codec_dev_cfg_t device_cfg{};
-      device_cfg.dev_type = ESP_CODEC_DEV_TYPE_OUT;
+      device_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN_OUT;
       device_cfg.codec_if = codec;
       device_cfg.data_if = data;
       device = esp_codec_dev_new(&device_cfg);
@@ -110,62 +115,75 @@ esp_codec_dev_handle_t open_device() {
       audio_codec_delete_ctrl_if(control);
     if (data)
       audio_codec_delete_data_if(data);
+    i2s_del_channel(rx);
     i2s_del_channel(tx);
   }
   return device;
 }
 
-void play(esp_codec_dev_handle_t device, const std::vector<int16_t> &pcm,
-          unsigned request) {
+esp_codec_dev_handle_t acquire_device() {
+  // Called with codec_mutex held. Retry initialization after a transient failure.
+  static esp_codec_dev_handle_t device = nullptr;
+  if (!device)
+    device = open_device();
+  if (!device)
+    return nullptr;
   esp_codec_dev_sample_info_t format{};
   format.bits_per_sample = 16;
   format.channel = 2;
   format.sample_rate = sample_rate;
-  if (esp_codec_dev_open(device, &format) != ESP_CODEC_DEV_OK) {
-    ESP_LOGW(tag, "Cannot open audio output");
-    return;
-  }
-  esp_codec_dev_set_out_vol(device, voice_volume);
+  if (esp_codec_dev_open(device, &format) != ESP_CODEC_DEV_OK)
+    return nullptr;
+  return device;
+}
+
+bool play(const int16_t *pcm, size_t count, const unsigned *request = nullptr) {
+  if (request && revision.load() != *request)
+    return true;
+  auto device = acquire_device();
+  if (!device)
+    return false;
+  bool ok = esp_codec_dev_set_out_vol(device, voice_volume) == ESP_CODEC_DEV_OK &&
+            esp_codec_dev_set_out_mute(device, false) == ESP_CODEC_DEV_OK;
   int16_t stereo[block_frames * 2];
-  // Send enough trailing silence to let the last PCM frames leave DMA.
-  const size_t frames = pcm.size() + dma_frames * dma_buffers;
-  for (size_t offset = 0; offset < frames && revision.load() == request;) {
-    const size_t count = std::min(block_frames, frames - offset);
-    for (size_t i = 0; i < count; ++i) {
+  // Flush the last PCM frames from DMA before closing the codec.
+  const size_t frames = count + dma_frames * dma_buffers;
+  for (size_t offset = 0; ok && offset < frames &&
+                          (!request || revision.load() == *request);) {
+    const size_t block = std::min(block_frames, frames - offset);
+    for (size_t i = 0; i < block; ++i) {
       const size_t index = offset + i;
-      const auto sample = index < pcm.size() ? pcm[index] : 0;
+      const auto sample = index < count ? pcm[index] : 0;
       stereo[2 * i] = stereo[2 * i + 1] = sample;
     }
-    if (esp_codec_dev_write(device, stereo, count * 2 * sizeof(int16_t)) !=
-        ESP_CODEC_DEV_OK) {
-      ESP_LOGW(tag, "Audio output failed");
-      break;
-    }
-    offset += count;
+    ok = esp_codec_dev_write(device, stereo, block * 2 * sizeof(int16_t)) ==
+         ESP_CODEC_DEV_OK;
+    offset += block;
   }
-  esp_codec_dev_close(device);
+  return esp_codec_dev_close(device) == ESP_CODEC_DEV_OK && ok;
+}
+
+bool take_announcement(uint64_t &seconds, unsigned &request) {
+  std::lock_guard lock(mutex);
+  request = revision.load();
+  if (request == handled_revision)
+    return false;
+  handled_revision = request;
+  seconds = requested_seconds;
+  return true;
 }
 
 void player_task(void *) {
-  esp_codec_dev_handle_t device = nullptr;
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    std::lock_guard lock(codec_mutex);
     uint64_t seconds;
     unsigned request;
-    {
-      std::lock_guard lock(mutex);
-      ulTaskNotifyTake(pdTRUE, 0);
-      seconds = requested_seconds;
-      request = revision.load();
+    if (take_announcement(seconds, request) && seconds) {
+      const auto pcm = voice::render(seconds);
+      if (!play(pcm.data(), pcm.size(), &request))
+        ESP_LOGW(tag, "Timer announcement failed");
     }
-    if (!seconds)
-      continue;
-    if (!device)
-      device = open_device();
-    if (device)
-      play(device, voice::render(seconds), request);
-    else
-      ESP_LOGW(tag, "Speaker initialization failed");
   }
 }
 
@@ -183,6 +201,48 @@ void schedule(int64_t now) {
   announce_at = interval ? run_started + ((now - run_started) / interval + 1) * interval : 0;
 }
 } // namespace
+
+bool audio::stream(Exchange exchange, void *context) {
+  std::lock_guard lock(codec_mutex);
+  auto device = acquire_device();
+  if (!device)
+    return false;
+  bool ok = esp_codec_dev_set_in_gain(device, 30) == ESP_CODEC_DEV_OK &&
+            esp_codec_dev_set_out_vol(device, voice_volume) == ESP_CODEC_DEV_OK &&
+            esp_codec_dev_set_out_mute(device, false) == ESP_CODEC_DEV_OK;
+  int16_t stereo[block_frames * 2];
+  int16_t pcm[block_frames];
+  unsigned quiet_blocks = 6;
+  std::vector<int16_t> announcement;
+  size_t announcement_offset = 0;
+  while (ok) {
+    uint64_t seconds;
+    unsigned request;
+    if (take_announcement(seconds, request)) {
+      announcement = seconds ? voice::render(seconds) : std::vector<int16_t>{};
+      announcement_offset = 0;
+    }
+    ok = esp_codec_dev_read(device, stereo, sizeof stereo) == ESP_CODEC_DEV_OK;
+    if (!ok)
+      break;
+    for (size_t i = 0; i < block_frames; ++i)
+      pcm[i] = quiet_blocks ? 0 : stereo[2 * i];
+    if (quiet_blocks)
+      --quiet_blocks;
+    if (!exchange(context, pcm, block_frames))
+      break;
+    for (size_t i = 0; i < block_frames; ++i) {
+      int sample = pcm[i];
+      if (announcement_offset < announcement.size())
+        sample += announcement[announcement_offset++];
+      if (sample < -96 || sample > 96)
+        quiet_blocks = 12;  // Suppress speaker leakage and the decay after playback.
+      stereo[2 * i] = stereo[2 * i + 1] = std::clamp(sample, -32768, 32767);
+    }
+    ok = esp_codec_dev_write(device, stereo, sizeof stereo) == ESP_CODEC_DEV_OK;
+  }
+  return esp_codec_dev_close(device) == ESP_CODEC_DEV_OK && ok;
+}
 
 void audio::init() {
   if (nvs_flash_init() == ESP_OK &&

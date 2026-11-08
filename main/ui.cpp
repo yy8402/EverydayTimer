@@ -4,9 +4,12 @@
 #include "fonts.h"
 #include <algorithm>
 #include <cstring>
-extern const uint8_t cjk_start[] asm("_binary_cjk_bin_start");
+
+const uint8_t *cjk_font();
+
 namespace {
 uint8_t *fb;
+
 constexpr int BLACK = 0, WHITE = 1;
 void pixel(int x, int y, int c) {
   if (x < 0 || x >= 400 || y < 0 || y >= 300)
@@ -46,7 +49,12 @@ void text(int x, int baseline, const std::string &s, const Font &f,
   while (*p) {
     uint32_t c = cp(p);
     if (c >= 0x4e00 && c <= 0x9fff) {
-      const auto *b = cjk_start + (c - 0x4e00) * 96;
+      const auto *font = cjk_font();
+      if (!font) {
+        x += 24;
+        continue;
+      }
+      const auto *b = font + (c - 0x4e00) * 96;
       for (int y = 0; y < 32; y++)
         for (int xx = 0; xx < 24; xx++)
           if (b[(y * 24 + xx) / 8] & (1 << (7 - xx % 8)))
@@ -163,9 +171,14 @@ void render_ui(uint8_t *frame, const timer_app::View &v) {
     text(x + width(current.digits, digits) + 9, 187, current.unit, font_unit);
 
   rect(22, 216, 356, 1, BLACK);
-  const std::string best = v.best_ms < 0 ? "BEST  --" :
-      "BEST  " + timer_app::format_duration(v.best_ms).with_unit();
-  text(22, 246, fit(best, 356, font_best), font_best);
+  const auto summary = [](const char *label, int64_t ms) {
+    return std::string(label) + "  " +
+        (ms < 0 ? "--" : timer_app::format_duration(ms).with_unit());
+  };
+  const auto best = fit(summary("BEST", v.best_ms), 168, font_best);
+  const auto last = fit(summary("LAST", v.last_ms), 168, font_best);
+  text(22, 246, best, font_best);
+  text(378 - width(last, font_best), 246, last, font_best);
   std::string footer;
   if (!v.error.empty())
     footer = v.error;

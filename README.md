@@ -1,6 +1,6 @@
 # EverydayTimer
 
-Custom, fully offline timer firmware for **ZECTRIX NOTE4C DevKit**, ESP32-S3 N16R8, 400×300 four-color SSD2683 panel. **Not for monochrome NOTE4.** This is a custom development build, not a manufacturer-supported release.
+Custom timer firmware for **ZECTRIX NOTE4C DevKit**, ESP32-S3 N16R8, 400×300 four-color SSD2683 panel. **Not for monochrome NOTE4.** This is a custom development build, not a manufacturer-supported release.
 
 ## What it does
 
@@ -9,7 +9,7 @@ Custom, fully offline timer firmware for **ZECTRIX NOTE4C DevKit**, ESP32-S3 N16
 - Earn a five-point star for a first or strictly faster personal best. Daily stars reset at 23:59 local time.
 - After five minutes idle, the timer gives way to a full-screen smile. Waking uses two fast refresh passes to clear its outline from the white timer screen.
 - Time is displayed in whole seconds and stored in milliseconds. The timer uses a monotonic clock and keeps a separate wall clock for records.
-- Edit activity names in English or Chinese on a removable USB drive. Clock sync and history export use USB serial. The timer runs offline.
+- Edit activity names in English or Chinese on a removable USB drive. Clock sync and history export use USB serial. The timer works offline.
 
 ![Timer renderer preview](docs/timer-preview.png)
 
@@ -74,3 +74,78 @@ See [BUILD.md](docs/BUILD.md) for the build and host test commands. ESP-IDF **v5
 - A slow screen may show a previous action/state while a new frame is pending. LED blink means running; wait for the selected activity screen before starting if unsure.
 
 First-device test: preserve the factory backup; sync clock; check UP/DOWN ordering, front toggle and LED; verify both English and Chinese labels; compare a 30-second run with a phone stopwatch; tap stop while the panel is actively refreshing; export and check timestamps/duration; reboot and verify best persists; then start and reset to verify an interrupted record. Check RTC again after power cycling. For stars, establish a first best, tie it, improve it, change activities, reboot, then test 23:58:59 → 23:59 and a new win in the last minute. Confirm midnight does not clear that new star and permanent records remain unchanged. Keep the backup until all checks pass.
+
+## Wireless Codex Voice
+
+Firmware 1.11.0 keeps timer taps on the front button. A hold of about one second
+sends an authenticated Voice event over Wi-Fi. The Mac bridge discovers the
+board on the same local network and reconnects after a disconnect. Audio
+uses the local network with no cable after pairing. The audio stream is
+unencrypted, so use a trusted network.
+
+After flashing, pair once with a USB data cable.
+
+```sh
+python -m pip install -r tools/requirements-live-audio.txt
+python tools/wifi_audio.py --pair --ssid "YOUR NETWORK" --key-file ~/.note4c-wifi.key
+```
+
+Install BlackHole 2ch and 16ch, then use them as the Mac's input and output
+respectively. Install and activate Karabiner VirtualHIDDevice 8.0.0 and run
+its daemon. Build the fixed-chord helper using the headers from the matching
+release checkout.
+
+```sh
+clang++ -std=c++23 -O2 -I "$KARABINER_SOURCE/include"   -isystem "$KARABINER_SOURCE/vendor/vendor/include"   -framework IOKit -framework CoreFoundation tools/voice_button.cpp   -o build/note4c-voice-button
+sudo -v
+python tools/wifi_audio.py --live --key-file ~/.note4c-wifi.key --voice-events   | sudo -n build/note4c-voice-button
+```
+
+The network bridge runs as your Mac user. The privileged helper reads only
+the fixed Voice event from its local pipe and sends Option–Shift–V. Set that
+chord in Codex Voice settings. Replies default to 5× nominal gain.
+
+### Change Wi-Fi after pairing
+
+Firmware 1.12.0 accepts the USB `wifi_config` command with `ssid` and
+`password`. Use VoiceLink's NOTE4C `pair.py --reconfigure` command to enter
+the password at a hidden prompt. Restart the board after a successful save.
+The command preserves the VoiceLink key and timer data.
+
+### Demo activity
+
+Demo appears first and is selected at startup and when waking from the idle
+screen. The first button tap wakes the timer, and the next tap can start
+Demo. It times a run normally and shows the current daily stars. Demo runs stay out of history, do not set
+a best time, and do not award stars. Demo is built in and does not appear
+in the editable activity file. For saved activities, BEST and LAST show the
+fastest and most recent completed times.
+
+### Export or clear history from Finder
+
+The NOTE4C volume exports a UTF-8 `history.csv` snapshot when it mounts.
+Copy it to your Mac before clearing history. To clear the board's history,
+stop the timer, move `history.csv` to Trash, and eject NOTE4C in Finder.
+The board clears history only after a clean eject of a volume that received
+a complete export and only if no records changed after that export. On
+success, it recreates a header-only CSV. Clearing history also clears the
+best times and daily stars derived from it.
+
+Unplugging the cable, a missing or failed export, and editing CSV contents
+leave internal history intact.
+
+#### Recover a missing export without clearing records
+
+1. Stop the timer and save a complete backup from the project directory with
+   `python tools/note4c.py history --output history-backup.json`. Save it on
+   the Mac outside the NOTE4C volume.
+2. Check free space on NOTE4C. Finder's Trash can still hold the previous
+   export on the device. If you need to free that space, copy the trashed
+   CSV to the Mac first, then select just that item in Trash and choose
+   **Delete Immediately**. You can also move other files off the volume.
+3. If a `history.csv` is already visible at the root of NOTE4C, leave it in
+   place when ejecting. Cleanly eject the volume, then reconnect or restart
+   the board. It publishes a fresh snapshot on the next mount.
+4. Open the new CSV and check its row count against the USB backup. If the
+   board still reports an export error or the history is too large for
+   the volume, use the complete JSON backup from step 1.

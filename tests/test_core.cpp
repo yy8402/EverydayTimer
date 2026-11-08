@@ -14,11 +14,11 @@ std::string read(const std::string&p){std::ifstream f(p);return {std::istreambuf
 void write(const std::string&p,const std::string&s){std::ofstream f(p);f<<s;}
 int main(){auto settingsroot=dir();{Core c(settingsroot);CHECK(c.init());CHECK(c.utc_offset_minutes()==480);CHECK(c.set_utc_offset_minutes(-330));CHECK(c.utc_offset_minutes()==-330);CHECK(!c.set_utc_offset_minutes(-721));CHECK(!c.set_utc_offset_minutes(841));CHECK(c.utc_offset_minutes()==-330);CHECK(!c.has_utc_marker());}{Core c(settingsroot);CHECK(c.init());CHECK(c.utc_offset_minutes()==-330);CHECK(c.view(0,false).utc_offset_minutes==-330);}write(settingsroot+"/settings.json","{\"schema_version\":1,\"utc_offset_minutes\":9999}");{Core c(settingsroot);CHECK(!c.init());CHECK(read(settingsroot+"/settings.json").find("9999")!=std::string::npos);}std::filesystem::remove_all(settingsroot);auto utc_marker_root=dir();{Core c(utc_marker_root);CHECK(c.init());CHECK(!c.has_utc_marker());CHECK(c.save_utc_marker());CHECK(c.has_utc_marker());}{Core c(utc_marker_root);CHECK(c.init());CHECK(c.has_utc_marker());}write(utc_marker_root+"/clock.json","{\"schema_version\":1,\"basis\":\"LOCAL\"}");{Core c(utc_marker_root);CHECK(c.init());CHECK(!c.has_utc_marker());}std::filesystem::remove_all(utc_marker_root);constexpr int64_t date=1793682000;auto root=dir();
  {
- Core c(root);CHECK(c.init());CHECK(c.view(0,true).total==3);CHECK(!c.start(1000,0));CHECK(c.start(1000000,date));CHECK(!c.select(1));CHECK(c.view(2500000,true).elapsed_ms==1500);CHECK(c.stop(4000000,date+3));CHECK(c.view(0,true).best_ms==3000);CHECK(c.record_count()==1);
- CHECK(c.start(9000000,date+10));CHECK(c.stop(11000000,date+12));CHECK(c.view(0,true).best_ms==2000);CHECK(c.start(12000000,date+13));CHECK(c.stop(16000000,date+17));CHECK(c.view(0,true).best_ms==2000);CHECK(c.view(0,true).elapsed_ms==4000);
- cJSON*d=cJSON_Parse("{\"schema_version\":1,\"actions\":[{\"id\":\"activity-1\",\"name\":\"穿衣服\"},{\"id\":\"new\",\"name\":\"New\"}]}");CHECK(c.set_actions(d));cJSON_Delete(d);CHECK(c.view(0,true).best_ms==2000);CHECK(read(root+"/history.json").find("Activity 1")!=std::string::npos);CHECK(c.select(1));CHECK(c.view(0,true).best_ms==-1);CHECK(c.select(1));CHECK(c.view(0,true).name=="穿衣服");CHECK(c.start(50000000,date+20));
+ Core c(root);CHECK(c.init());CHECK(c.view(0,true).total==4);CHECK(!c.start(1000,0));CHECK(c.start(1000000,date));CHECK(!c.select(1));CHECK(c.view(2500000,true).elapsed_ms==1500);CHECK(c.stop(4000000,date+3));CHECK(c.view(0,true).best_ms==3000);CHECK(c.record_count()==1);
+ CHECK(c.start(9000000,date+10));CHECK(c.stop(11000000,date+12));CHECK(c.view(0,true).best_ms==2000);CHECK(c.start(12000000,date+13));CHECK(c.stop(16000000,date+17));CHECK(c.view(0,true).best_ms==2000);CHECK(c.view(0,true).elapsed_ms==4000);CHECK(c.view(0,true).last_ms==4000);
+ cJSON*d=cJSON_Parse("{\"schema_version\":1,\"actions\":[{\"id\":\"activity-1\",\"name\":\"穿衣服\"},{\"id\":\"new\",\"name\":\"New\"}]}");CHECK(c.set_actions(d));cJSON_Delete(d);CHECK(c.view(0,true).best_ms==2000);CHECK(read(root+"/history.json").find("Activity 1")!=std::string::npos);CHECK(c.select(1));CHECK(c.view(0,true).best_ms==-1);CHECK(c.select(1));CHECK(c.view(0,true).name=="Demo");CHECK(c.select(1));CHECK(c.view(0,true).name=="穿衣服");CHECK(c.start(50000000,date+20));
  }
- {Core c(root);CHECK(c.init());CHECK(c.record_count()==4);CHECK(c.view(0,true).best_ms==2000);CHECK(read(root+"/history.json").find("interrupted")!=std::string::npos);CHECK(!std::filesystem::exists(root+"/pending.json"));}
+ {Core c(root);CHECK(c.init());CHECK(c.record_count()==4);CHECK(c.view(0,true).best_ms==2000);CHECK(c.view(0,true).last_ms==4000);CHECK(read(root+"/history.json").find("interrupted")!=std::string::npos);CHECK(!std::filesystem::exists(root+"/pending.json"));}
  auto valid=read(root+"/history.json");write(root+"/history.json",valid.substr(0,valid.size()-3)+",{\"seq\":5,\"action");
  {Core c(root);CHECK(c.init());CHECK(c.record_count()==4);CHECK(read(root+"/history.json")==valid);CHECK(c.start(10000,date+30));CHECK(c.stop(1110000,date+31));CHECK(c.view(0,true).best_ms==1100);}
  {Core c(root);CHECK(c.init());CHECK(c.record_count()==5);cJSON*d=cJSON_Parse(read(root+"/history.json").c_str());CHECK(d);cJSON_Delete(d);}
@@ -61,6 +61,56 @@ int main(){auto settingsroot=dir();{Core c(settingsroot);CHECK(c.init());CHECK(c
   write(recoverroot+"/pending.json",pending);
   for(int restart=0;restart<2;restart++){Core c(recoverroot);CHECK(!c.init());CHECK(read(recoverroot+"/pending.json")==pending);CHECK(read(recoverroot+"/history.json")==committed);}
  }
+ auto csv_root = dir();
+ {
+   Core c(csv_root);
+   CHECK(c.init());
+   const auto revision = c.history_revision();
+   CHECK(c.start(1000000, date));
+   CHECK(c.stop(2500000, date + 2));
+   CHECK(c.history_revision() != revision);
+   const auto history = read(csv_root + "/history.json");
+   FILE *csv = fopen((csv_root + "/history.csv").c_str(), "wb");
+   CHECK(csv != nullptr);
+   CHECK(c.write_history_csv(csv));
+   CHECK(fclose(csv) == 0);
+   CHECK(read(csv_root + "/history.csv").find("1500,completed,true\r\n") != std::string::npos);
+   CHECK(read(csv_root + "/history.json") == history);
+   const auto saved_revision = c.history_revision();
+   CHECK(c.clear_history());
+   CHECK(c.history_revision() != saved_revision);
+   csv = fopen((csv_root + "/history.csv").c_str(), "wb");
+   CHECK(csv != nullptr);
+   CHECK(c.write_history_csv(csv));
+   CHECK(fclose(csv) == 0);
+   CHECK(read(csv_root + "/history.csv") ==
+         "\xef\xbb\xbf" "sequence,activity,started_at,ended_at,duration_ms,status,new_best\r\n");
+ }
+ std::filesystem::remove_all(csv_root);
+ auto demo_root = dir();
+ {
+   Core c(demo_root);
+   CHECK(c.init());
+   CHECK(c.start(1000000, date));
+   CHECK(c.stop(2000000, date + 1));
+   const auto history = read(demo_root + "/history.json");
+   const auto stars = c.view(0, true).daily_stars;
+   CHECK(stars > 0);
+   CHECK(c.select_demo());
+   CHECK(c.view(0, true).index == 0);
+   CHECK(c.view(0, true).name == "Demo");
+   CHECK(c.view(0, true).stars_available);
+   CHECK(c.start(3000000, 0));
+   CHECK(!std::filesystem::exists(demo_root + "/pending.json"));
+   CHECK(c.stop(4500000, 0));
+   CHECK(c.view(0, true).elapsed_ms == 1500);
+   CHECK(c.view(0, true).best_ms == -1);
+   CHECK(c.view(0, true).last_ms == -1);
+   CHECK(c.view(0, true).daily_stars == stars);
+   CHECK(c.record_count() == 1);
+   CHECK(read(demo_root + "/history.json") == history);
+ }
+ std::filesystem::remove_all(demo_root);
  auto textroot = dir();
  {
    Core c(textroot);

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate checked-in bitmap fonts using Pillow. Only needed to change typefaces."""
 import argparse
+import zlib
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 ROOT=Path(__file__).resolve().parents[1]
@@ -18,12 +19,14 @@ def generate_cjk(path):
  font=ImageFont.truetype(str(path),24)
  if font.getname() != ('Noto Sans CJK SC', 'Medium'):
   raise ValueError('Expected NotoSansCJKsc-Medium.otf')
- with (ROOT/'main/cjk.bin').open('wb') as f:
-  for code in range(0x4e00,0xa000):
-   im=Image.new('1',(24,32))
-   ImageDraw.Draw(im).text((0,26),chr(code),font=font,fill=1,anchor='ls')
-   f.write(packed(im))
- print('Generated', (ROOT/'main/cjk.bin').stat().st_size, 'bytes of CJK glyphs')
+ data=bytearray()
+ for code in range(0x4e00,0xa000):
+  im=Image.new('1',(24,32))
+  ImageDraw.Draw(im).text((0,26),chr(code),font=font,fill=1,anchor='ls')
+  data.extend(packed(im))
+ output=ROOT/'main/cjk.z'
+ output.write_bytes(zlib.compress(data,9))
+ print('Generated', output.stat().st_size, 'bytes of compressed CJK glyphs')
 
 parser=argparse.ArgumentParser(description=__doc__)
 mode=parser.add_mutually_exclusive_group()
